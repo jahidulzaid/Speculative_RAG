@@ -5,6 +5,18 @@
 # #### Libraries
 
 # %%
+    # from google.colab import userdata
+    # import os
+
+    # os.environ["OPENAI_API_KEY"] = userdata.get('OPENAI_API_KEY')
+
+# %%
+# %pip install loguru
+
+# %%
+# %pip install qdrant-client
+
+# %%
 import asyncio
 import json
 from collections import defaultdict
@@ -24,6 +36,9 @@ from tiktoken import Encoding, encoding_for_model, get_encoding
 
 from qdrant_client import AsyncQdrantClient, models
 
+#later
+import tqdm
+
 # %% [markdown]
 # ## 1. Create Qdrant collection and retriever
 
@@ -32,73 +47,62 @@ from qdrant_client import AsyncQdrantClient, models
 
 # %%
 # Qdrant Client
-
-async def main():
-    # Qdrant Client
-    path: Path = Path("qdrant_client")
-    qdrant_client: AsyncQdrantClient = AsyncQdrantClient(path=path)
+path: Path = Path("qdrant_client")
+qdrant_client: AsyncQdrantClient = AsyncQdrantClient(path=path)
 
 # %%
 # OpenAI Client
-    # OpenAI Client
-    openai_client: AsyncOpenAI = AsyncOpenAI()
+openai_client: AsyncOpenAI = AsyncOpenAI()
 
 # %% [markdown]
 # #### Create collection
 
 # %%
 # Embeddings specs
-    # Embeddings specs
-    embedding_model: str = "text-embedding-3-small"
-    dimension: int = 1536
-    collection_name: str = "speculative_rag"
-
-
-
+embedding_model: str = "text-embedding-3-small"
+dimension: int = 1536
+collection_name: str = "speculative_rag"
 
 # %%
 # Get existing collections
-    # Get existing collections
-    current_collections: models.CollectionsResponse = await qdrant_client.get_collections()
+current_collections: models.CollectionsResponse = await qdrant_client.get_collections()
 
-    # Create collection
-    if collection_name not in [col.name for col in current_collections.collections]:
-        logger.info("Collection {col} doesn't exist. Creating...", col=collection_name)
-        await qdrant_client.create_collection(
-            collection_name=collection_name,
-            vectors_config=models.VectorParams(
-                size=dimension, distance=models.Distance.DOT
-            ),
-        )
-        logger.info("Collection {col} created!", col=collection_name)
-    else:
-        logger.info(
-            "Collection {col} already exists, skipping creation.", col=collection_name
-        )
+# Create collection
+if collection_name not in [col.name for col in current_collections.collections]:
+    logger.info("Collection {col} doesn't exist. Creating...", col=collection_name)
+    await qdrant_client.create_collection(
+        collection_name=collection_name,
+        vectors_config=models.VectorParams(
+            size=dimension, distance=models.Distance.DOT
+        ),
+    )
+    logger.info("Collection {col} created!", col=collection_name)
+else:
+    logger.info(
+        "Collection {col} already exists, skipping creation.", col=collection_name
+    )
 
 # %% [markdown]
 # #### Load dataset
 
 # %%
 # Load dataset
-    # Load dataset
-    dataset: Dataset = load_dataset(
-        path="jamescalam/ai-arxiv2-semantic-chunks", split="train"
-    )
-    print(json.dumps(dataset[0], indent=4))
+dataset: Dataset = load_dataset(
+    path="jamescalam/ai-arxiv2-semantic-chunks", split="train"
+)
+print(json.dumps(dataset[0], indent=4))
 
 # %%
 # Using only 50k rows
-    # Using only 50k rows
-    rows_to_keep: int = 50_000
+rows_to_keep: int = 2
 
-    # Easier to handle as pandas df
-    records: list[dict[str, Any]] = (
-        dataset.to_pandas().iloc[:rows_to_keep].to_dict(orient="records")
-    )
+# Easier to handle as pandas df
+records: list[dict[str, Any]] = (
+    dataset.to_pandas().iloc[:rows_to_keep].to_dict(orient="records")
+)
 
 # %%
-    print(records[0])
+records[0]
 
 # %% [markdown]
 # #### Upload information to Qdrant (run only once!)
@@ -162,52 +166,48 @@ async def process_batch(
 
 
 # %%
-# batch_size: int = 512
-# max_context_len: int = 8192
-# encoding_name: str = "cl100k_base"
-# total_batches: int = len(records) // batch_size
-# all_points: list[models.PointStruct | None] = []
-    # batch_size: int = 512
-    # max_context_len: int = 8192
-    # encoding_name: str = "cl100k_base"
-    # total_batches: int = len(records) // batch_size
-    # all_points: list[models.PointStruct | None] = []
-    # _now: float = perf_counter()
-    # for i in tqdm(range(0, len(records), batch_size), total=total_batches, desc="Points"):
-    #     batch: list[dict[str, Any]] = records[i : i + batch_size]
-    #     points: list[models.PointStruct] = await process_batch(
-    #         client=openai_client,
-    #         batch=batch,
-    #         model=embedding_model,
-    #         encoding_name=encoding_name,
-    #         max_context_len=max_context_len,
-    #     )
-    #     all_points.extend(points)
-    # logger.info("Generated all Points in {secs:.4f} seconds.", secs=perf_counter() - _now)
+batch_size: int = 512
+max_context_len: int = 8192
+encoding_name: str = "cl100k_base"
+total_batches: int = len(records) // batch_size
+all_points: list[models.PointStruct | None] = []
+
+_now: float = perf_counter()
+for i in tqdm.tqdm(range(0, len(records), batch_size), total=total_batches, desc="Points"):
+    batch: list[dict[str, Any]] = records[i : i + batch_size]
+    points: list[models.PointStruct] = await process_batch(
+        client=openai_client,
+        batch=batch,
+        model=embedding_model,
+        encoding_name=encoding_name,
+        max_context_len=max_context_len,
+    )
+    all_points.extend(points)
+logger.info("Generated all Points in {secs:.4f} seconds.", secs=perf_counter() - _now)
 
 # %%
 # Upsert Points
-# await qdrant_client.upsert(collection_name=collection_name, points=points)
+await qdrant_client.upsert(collection_name=collection_name, points=all_points)
 
 # %% [markdown]
 # #### testing vector search
 
 # %%
-    query: str = "Mixture of Experts"
-    query_vector: Any = await openai_client.embeddings.create(
-        input=query, model=embedding_model
-    )
-    query_vector: list[float] = query_vector.data[0].embedding
-    out: list[models.ScoredPoint] = await qdrant_client.search(
-        collection_name=collection_name, query_vector=query_vector, with_vectors=True
-    )
+query: str = "Mixture of Experts"
+query_vector: Any = await openai_client.embeddings.create(
+    input=query, model=embedding_model
+)
+query_vector: list[float] = query_vector.data[0].embedding
+out: list[models.ScoredPoint] = await qdrant_client.search(
+    collection_name=collection_name, query_vector=query_vector, with_vectors=True
+)
 
 # %%
-    print(f"Id: {out[0].id}")
-    print(f"Score: {out[0].score:.3}")
-    print(f"Title: {out[0].payload.get('title')} [{out[0].payload.get('arxiv_id')}]")
-    print(f"Chunk: {out[0].payload.get('content')[:1000]} ...")
-    print(f"Vector: {out[0].vector[:5]} ... ")
+print(f"Id: {out[0].id}")
+print(f"Score: {out[0].score:.3}")
+print(f"Title: {out[0].payload.get('title')} [{out[0].payload.get('arxiv_id')}]")
+print(f"Chunk: {out[0].payload.get('content')[:1000]} ...")
+print(f"Vector: {out[0].vector[:5]} ... ")
 
 # %% [markdown]
 # ## 2. Speculative RAG
@@ -257,18 +257,18 @@ def multi_perspective_sampling(
 
 # %%
 # Testing
-    k: int = 2
-    seed: int = 1399
-    now: float = perf_counter()
-    sampled_docs: list[list[str]] = multi_perspective_sampling(
-        k=k, retrieved_points=out, seed=seed
-    )
-    logger.info(
-        "Multi perspective sampling done in {s:.4f} seconds.", s=perf_counter() - now
-    )
+k: int = 2
+seed: int = 1399
+now: float = perf_counter()
+sampled_docs: list[list[str]] = multi_perspective_sampling(
+    k=k, retrieved_points=out, seed=seed
+)
+logger.info(
+    "Multi perspective sampling done in {s:.4f} seconds.", s=perf_counter() - now
+)
 
 # %%
-    print(sampled_docs)
+sampled_docs
 
 # %% [markdown]
 # #### Rag Drafting
@@ -315,25 +315,25 @@ async def rag_drafting_generator(
 
 # %%
 # Testing
-    m_drafter: str = "gpt-4o-mini-2024-07-18"
-    instruction: str = "What is MoE?"
+m_drafter: str = "gpt-4o-mini-2024-07-18"
+instruction: str = "What is MoE?"
 
-    now: float = perf_counter()
-    rag_drafts: list[tuple[RagDraftingResponse, float]] = await asyncio.gather(
-        *[
-            rag_drafting_generator(
-                client=openai_client,
-                model_name=m_drafter,
-                instruction=instruction,
-                evidence="\n".join(
-                    [f"[{idx}] {doc}" for idx, doc in enumerate(subset, start=1)]
-                ),
-            )
-            for subset in sampled_docs
-        ]
-    )
-    logger.info("RAG Drafting done in {s:.4f} seconds.", s=perf_counter() - now)
-    print(rag_drafts)
+now: float = perf_counter()
+rag_drafts: list[tuple[RagDraftingResponse, float]] = await asyncio.gather(
+    *[
+        rag_drafting_generator(
+            client=openai_client,
+            model_name=m_drafter,
+            instruction=instruction,
+            evidence="\n".join(
+                [f"[{idx}] {doc}" for idx, doc in enumerate(subset, start=1)]
+            ),
+        )
+        for subset in sampled_docs
+    ]
+)
+logger.info("RAG Drafting done in {s:.4f} seconds.", s=perf_counter() - now)
+rag_drafts
 
 # %% [markdown]
 # #### Generalist RAG Verifier
@@ -341,7 +341,7 @@ async def rag_drafting_generator(
 # %%
 rag_verifier_prompt: str = """## Instruction: {instruction}
 
-## Response: {response} 
+## Response: {response}
 
 ## Rationale: {rationale}
 
@@ -388,36 +388,36 @@ async def rag_verifier_generator(
 
 # %%
 # Testing
-    m_verifier: str = "gpt-4o-2024-08-06"
-    instruction: str = "What is MoE?"
+m_verifier: str = "gpt-4o-2024-08-06"
+instruction: str = "What is MoE?"
 
-    now: float = perf_counter()
-    rag_verifications: list[tuple[str, float]] = await asyncio.gather(
-        *[
-            rag_verifier_generator(
-                client=openai_client,
-                model_name=m_verifier,
-                instruction=instruction,
-                evidence="\n".join(
-                    [f"[{idx}] {doc}" for idx, doc in enumerate(subset, start=1)]
-                ),
-                response=rag_drafting_response.response,
-                rationale=rag_drafting_response.rationale,
-            )
-            for subset, (rag_drafting_response, _) in zip(sampled_docs, rag_drafts)
-        ]
-    )
-    logger.info("RAG Drafting done in {s:.4f} seconds.", s=perf_counter() - now)
-    print(rag_verifications)
+now: float = perf_counter()
+rag_verifications: list[tuple[str, float]] = await asyncio.gather(
+    *[
+        rag_verifier_generator(
+            client=openai_client,
+            model_name=m_verifier,
+            instruction=instruction,
+            evidence="\n".join(
+                [f"[{idx}] {doc}" for idx, doc in enumerate(subset, start=1)]
+            ),
+            response=rag_drafting_response.response,
+            rationale=rag_drafting_response.rationale,
+        )
+        for subset, (rag_drafting_response, _) in zip(sampled_docs, rag_drafts)
+    ]
+)
+logger.info("RAG Drafting done in {s:.4f} seconds.", s=perf_counter() - now)
+rag_verifications
 
 # %% [markdown]
 # #### Final Response
 
 # %%
-    best_answer: int = np.argmax(
-        p_draft * p_self for (_, p_draft), (_, p_self) in zip(rag_drafts, rag_verifications)
-    )
-    print(f"Response:\n ------ \n{rag_drafts[best_answer][0].response}")
+best_answer: int = np.argmax(
+    p_draft * p_self for (_, p_draft), (_, p_self) in zip(rag_drafts, rag_verifications)
+)
+print(f"Response:\n ------ \n{rag_drafts[best_answer][0].response}")
 
 # %% [markdown]
 # ## 3. "end-to-end" Code
@@ -514,18 +514,17 @@ async def speculative_rag(
     return rag_drafts[best_answer][0].response
 
 # %%
-    # Example call to speculative_rag (uncomment and adjust as needed)
-    # final_answer: str = await speculative_rag(
-    #     query="What is Query2doc?",
-    #     embedding_model=embedding_model,
-    #     collection_name=collection_name,
-    #     k=k,
-    #     seed=seed,
-    #     client=openai_client,
-    #     qdrant_client=qdrant_client,
-    #     m_drafter=m_drafter,
-    #     m_verifier=m_verifier,
-    # )
+final_answer: str = await speculative_rag(
+    query="What is Query2doc?",
+    embedding_model=embedding_model,
+    collection_name=collection_name,
+    k=k,
+    seed=seed,
+    client=openai_client,
+    qdrant_client=qdrant_client,
+    m_drafter=m_drafter,
+    m_verifier=m_verifier,
+)
 
 # %% [markdown]
 # #### Base RAG
@@ -562,7 +561,7 @@ async def base_rag(
     logger.info("Generating response...")
     prompt: str = """Below is an instruction that describes a task. Write a response that appropriately completes the request.
 
-    ### Evidence: {evidence} 
+    ### Evidence: {evidence}
 
     ### Instruction: {instruction}
 
@@ -596,17 +595,13 @@ async def base_rag(
     return response
 
 # %%
-    # Example call to base_rag (uncomment and adjust as needed)
-    # final_answer: str = await base_rag(
-    #     query="What is Query2doc?",
-    #     embedding_model=embedding_model,
-    #     collection_name=collection_name,
-    #     client=openai_client,
-    #     qdrant_client=qdrant_client,
-    #     generation_model=m_verifier,
-    # )
-
-if __name__ == "__main__":
-    asyncio.run(main())
+final_answer: str = await base_rag(
+    query="What is Query2doc?",
+    embedding_model=embedding_model,
+    collection_name=collection_name,
+    client=openai_client,
+    qdrant_client=qdrant_client,
+    generation_model=m_verifier,
+)
 
 
